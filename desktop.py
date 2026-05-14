@@ -67,6 +67,7 @@ class App(tk.Tk):
         # State
         self.messages = []
         self.is_streaming = False
+        self._stop_requested = False
         self.stream_text = ""
         self.memories = {}
         self.started = False
@@ -593,6 +594,11 @@ class App(tk.Tk):
             font=("Consolas", 9), cursor="hand2")
         self.thinking_btn.pack(side="right", padx=(0, 8))
         self.thinking_btn.bind("<Button-1>", lambda e: self._toggle_thinking())
+
+        self.stop_btn = tk.Label(inner_bar,
+            text="⏹ 停止", bg="#0a0a0a", fg="#ff4444",
+            font=("Consolas", 9, "bold"), cursor="hand2")
+        self.stop_btn.bind("<Button-1>", lambda e: self._stop_stream())
 
         self.plan_status = tk.Label(inner_bar, text="", bg="#0a0a0a",
             fg="#8888ff", font=("Consolas", 9))
@@ -2184,6 +2190,7 @@ class App(tk.Tk):
             self.text.delete("1.0", "end")
             self.text.configure(state="disabled")
         self.is_streaming = True
+        self.stop_btn.pack(side="right", padx=(0, 2))
         self.input.configure(state="disabled")
         self.send_btn.configure(state="disabled", text="...")
         self.stream_text = ""
@@ -2290,6 +2297,7 @@ class App(tk.Tk):
         self.text.see("end")
 
         self.is_streaming = True
+        self.stop_btn.pack(side="right", padx=(0, 2))
         self.input.configure(state="disabled")
         self.send_btn.configure(state="disabled", text="...")
         self.stream_text = ""
@@ -2321,6 +2329,8 @@ class App(tk.Tk):
             # 工具调用循环：最多 5 轮深度
             max_rounds = 5
             for _round in range(max_rounds):
+                if self._stop_requested:
+                    break
                 if _round > 0:
                     # 从第二轮开始，带上上一轮的工具结果重新请求
                     full.append({"role": "user", "content": "请基于工具返回的结果继续。"})
@@ -2336,6 +2346,8 @@ class App(tk.Tk):
                 collected_content = ""
 
                 for content, reasoning, usage, tc in stream_gen:
+                    if self._stop_requested:
+                        break
                     if tc:
                         tool_calls = tc
                         break
@@ -2444,8 +2456,19 @@ class App(tk.Tk):
         self.text.configure(state="disabled")
         self.text.see("end")
 
-    def _stream_done(self):
+    def _stop_stream(self):
+        """中断当前流式生成"""
+        self._stop_requested = True
+        self._stream_cleanup()
+        self.after(0, self._show_lines, ["  ⏹ 已停止"], "dim")
+
+    def _stream_cleanup(self):
+        """流结束后恢复 UI 状态（共用）。"""
         self.is_streaming = False
+        self.stop_btn.pack_forget()
+
+    def _stream_done(self):
+        self._stream_cleanup()
         if self.active_plan:
             if self.stream_text:
                 self.active_plan["results"].append(self.stream_text)
@@ -2478,7 +2501,7 @@ class App(tk.Tk):
         self.text.configure(state="normal")
         self.text.insert("end", f"\n[!] {msg}\n", "error")
         self.text.configure(state="disabled")
-        self.is_streaming = False
+        self._stream_cleanup()
         self.input.configure(state="normal")
         self.send_btn.configure(state="normal", text="发送")
         self.input.focus()
