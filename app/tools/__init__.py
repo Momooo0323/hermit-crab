@@ -109,14 +109,15 @@ def get_openai_tools() -> list[dict]:
 
 # 工具 → 权限映射（没有映射的工具默认放行）
 _TOOL_PERMISSIONS = {
-    "read_file":    "file_read",
-    "file_write":   "file_create",
-    "file_delete":  "file_delete",
-    "memory_add":   "memory_add",
+    "read_file":     "file_read",
+    "file_write":    "file_create",
+    "file_delete":   "file_delete",
+    "create_folder": "file_create",
+    "memory_add":    "memory_add",
     "memory_delete": "memory_delete",
-    "web_search":   "web_search",
-    "kb_search":    "kb_search",
-    "kb_index":     "kb_index",
+    "web_search":    "web_search",
+    "kb_search":     "kb_search",
+    "kb_index":      "kb_index",
 }
 
 
@@ -167,5 +168,6 @@ def init_tools(app):
     import app.tools.read_file
     import app.tools.file_write
     import app.tools.file_delete
+    import app.tools.create_folder
     import app.tools.knowledge_tools
     import app.tools.memory_tools

@@ -1963,6 +1963,20 @@ class App(tk.Tk):
                   padx=24, cursor="hand2",
                   command=do_delete).pack(side="right")
 
+    def _cmd_mkdir(self, arg):
+        """/mkdir <文件夹路径> — 创建文件夹。"""
+        if not self._perm_check("file_create", "文件创建"):
+            return
+        if not arg:
+            self._show_lines(["  用法: /mkdir <文件夹路径>  — 创建文件夹"], "dim")
+            return
+        fp = Path(arg)
+        try:
+            fp.mkdir(parents=True, exist_ok=True)
+            self._show_lines([f"  ✓ 文件夹已创建: {fp}"], "dim")
+        except Exception as e:
+            self._show_lines([f"  [!] 创建失败: {e}"], "error")
+
     # ======== Intent Detection ========
 
     def _detect_intent(self, text):
@@ -2237,6 +2251,8 @@ class App(tk.Tk):
                 self._cmd_write(cmd_line[6:])
             elif cmd_line.startswith("delete "):
                 self._cmd_delete(cmd_line[7:])
+            elif cmd_line.startswith("mkdir "):
+                self._cmd_mkdir(cmd_line[6:])
             elif cmd_line.startswith("plan "):
                 self._cmd_plan(cmd_line[5:])
             elif cmd_line.startswith("kb "):
