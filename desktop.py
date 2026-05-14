@@ -15,6 +15,7 @@ from app.tools import register, execute_tool, init_tools, get_openai_tools, matc
 from app.memory import (
     MEMORY_DIR, MEMORY_INDEX, ensure_dirs, load_memories,
     save_memory, delete_memory, build_memory_text,
+    memorize_from_kb,
     TYPE_ICONS, TYPE_LABELS,
 )
 from app.themes import *
@@ -368,6 +369,11 @@ class App(tk.Tk):
         memories = load_memories()
         ctx = build_memory_text(memories)
         sp = self.system_prompt + self.plan_prompt
+        sp += (
+            "\n\n你可以通过回复中包含以下格式来让系统自动创建记忆：\n"
+            "[记忆保存] 名字 | 简短描述 | 详细内容\n"
+            "适用于用户明确要求记住某事，或者对话中出现了明显值得长期记住的信息时。"
+        )
         if self.context_summary:
             sp += "\n\n[早期对话摘要]\n" + self.context_summary[:800]
         if self.kb:
@@ -1095,6 +1101,7 @@ class App(tk.Tk):
             "  /mem list          列出所有记忆",
             "  /mem add <名> <描述> 添加记忆",
             "  /mem del <名>      删除记忆",
+            "  /mem distill <查询> 从知识库提取内容保存为记忆",
             "  /status            检查后端状态",
             "  /clear             清屏",
             "  /history          历史对话浏览",
@@ -1210,7 +1217,24 @@ class App(tk.Tk):
         self._load_memories()
         self._show_lines([f"  已删除记忆: {arg}"], "dim")
 
-    def _cmd_models(self, switch_name=None):
+    def _cmd_mem_distill(self, query):
+        """从知识库提取内容保存为记忆。"""
+        if not self.kb or not hasattr(self.kb, 'search'):
+            self._show_lines(["  知识库未初始化，请先 /kb index <路径>"], "dim")
+            return
+        if not query:
+            self._show_lines(["  用法: /mem distill <查询词>"], "dim")
+            return
+        self._show_lines([f"  🔍 搜索知识库: {query}"], "dim")
+        created = memorize_from_kb(self.kb, query)
+        if not created:
+            self._show_lines(["  知识库中未找到相关结果"], "dim")
+        else:
+            self._load_memories()
+            lines = [f"  ✅ 已从知识库创建 {len(created)} 条记忆:"]
+            for name, desc in created:
+                lines.append(f"    [{name}] {desc}")
+            self._show_lines(lines, "dim")
         models = self._list_models()
         if not models:
             if self.provider == "local":
@@ -1403,6 +1427,13 @@ class App(tk.Tk):
 
     def _load_config(self):
         if CONFIG_FILE.exists():
+            return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        # 首次启动：从 example 自动复制
+        example = CONFIG_FILE.with_name("config.example.json")
+        if example.exists():
+            import shutil
+            shutil.copy2(example, CONFIG_FILE)
+            print(f"[config] 已从 config.example.json 创建 {CONFIG_FILE.name}")
             return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
         return {}
 
@@ -2357,6 +2388,10 @@ class App(tk.Tk):
                 self._cmd_mem_add(cmd_line[8:])
             elif cmd_line.startswith("mem del "):
                 self._cmd_mem_del(cmd_line[8:])
+            elif cmd_line.startswith("mem distill "):
+                self._cmd_mem_distill(cmd_line[12:])
+            elif cmd_line == "mem distill":
+                self._show_lines(["  用法: /mem distill <查询词>  — 从知识库提取相关片段保存为记忆"], "dim")
             elif cmd_line == "history":
                 self._show_history_dialog()
             elif cmd_line in ("new", "新对话"):
@@ -2516,6 +2551,18 @@ class App(tk.Tk):
 
                 # 没有工具调用，流式输出结束
                 break
+
+            # ── 解析自动记忆 ──
+            if self.stream_text:
+                for m in re.finditer(r'\[记忆保存\]\s*(.+?)\|(.+?)\|(.+?)(?=\n|$)', self.stream_text):
+                    name = m.group(1).strip()[:30]
+                    desc = m.group(2).strip()[:60]
+                    content = m.group(3).strip()[:500]
+                    try:
+                        save_memory(name, desc, content, mem_type="fact", importance=3)
+                        self._show_lines([f"  ✅ 已自动保存记忆: {name}"], "dim")
+                    except Exception:
+                        pass
 
             if self.completion_tokens == 0 and self.stream_text:
                 self.completion_tokens = max(1, len(self.stream_text) // 3)

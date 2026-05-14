@@ -150,3 +150,24 @@ def build_memory_text(memories):
                 c += "..."
             parts.append(f"    {c}")
     return "\n".join(parts)
+
+
+def memorize_from_kb(kb, query, max_items=3):
+    """
+    Search knowledge base and save top results as memories.
+    Returns list of (name, description) created.
+    """
+    results = kb.search(query)
+    if not results:
+        return []
+
+    created = []
+    for i, (score, doc) in enumerate(results[:max_items]):
+        snippet = doc["text"][:200]
+        source = Path(doc["source"]).stem
+        name = f"kb-{source}-{i+1}"
+        desc = f"来自知识库: {source}"
+        save_memory(name, desc, snippet,
+                    mem_type="fact", importance=2)
+        created.append((name, desc))
+    return created

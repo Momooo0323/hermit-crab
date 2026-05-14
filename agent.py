@@ -55,6 +55,14 @@ def load_config():
             config.update(user_config)
         except (json.JSONDecodeError, OSError):
             pass
+    else:
+        # 首次启动：从 example 自动复制
+        example = CONFIG_FILE.with_name("config.example.json")
+        if example.exists():
+            import shutil
+            shutil.copy2(example, CONFIG_FILE)
+            print(f"[config] 已从 config.example.json 创建 {CONFIG_FILE.name}")
+            config.update(json.loads(CONFIG_FILE.read_text(encoding="utf-8")))
     return config
 
 

@@ -1,0 +1,10 @@
+{
+  "api_base": "http://localhost:8080/v1",
+  "model": "gpt-3.5-turbo",
+  "temperature": 0.7,
+  "max_tokens": 4096,
+  "timeout": 120,
+  "system_prompt": "你是 Agent，一个 helpful AI 助手。你有持久的记忆系统，能记住关于用户的信息。回答保持简洁、有帮助。使用和用户一样的语言回复。",
+  "theme": "default",
+  "provider": "local"
+}
