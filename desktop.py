@@ -11,6 +11,7 @@ from ctypes import wintypes
 from pathlib import Path
 from datetime import datetime
 from app import providers
+from app.tools import register, execute_tool, init_tools, get_openai_tools, match_tool_from_text
 from app.memory import (
     MEMORY_DIR, MEMORY_INDEX, ensure_dirs, load_memories,
     save_memory, delete_memory, build_memory_text,
@@ -24,6 +25,14 @@ from app.win32_drop import WM_DROPFILES, WNDPROC
 
 LLAMA_PORT = 8080
 CONFIG_FILE = Path(__file__).parent / "config.json"
+
+# ── 可选系统密钥环 ──
+_has_keyring = False
+try:
+    import keyring
+    _has_keyring = True
+except ImportError:
+    pass
 
 SHRIMP_BANNER = r"""
    ╔══════════════════╗
@@ -129,9 +138,7 @@ class App(tk.Tk):
             cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
             self.theme_name = cfg.get("theme", "default")
             self.provider = cfg.get("provider", "local")
-            self.openai_api_key = cfg.get("openai_api_key", "")
-            self.openai_base_url = cfg.get("openai_base_url", "")
-            self.anthropic_api_key = cfg.get("anthropic_api_key", "")
+            self._load_credentials(cfg)
         except:
             pass
 
@@ -144,6 +151,7 @@ class App(tk.Tk):
         self._restore_geometry()
 
         self._build_ui()
+        init_tools(self)
         self._load_memories()
         self._check_status()
         # 自动启动后端
@@ -153,13 +161,51 @@ class App(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _save_config(self, updates):
-        """原子地更新 config.json 中的字段。"""
+        """原子地更新 config.json 中的字段（不保存凭证，走 _save_credentials）。"""
+        # 过滤掉凭证字段
+        safe_updates = {k: v for k, v in updates.items()
+                        if k not in ("openai_api_key", "openai_base_url", "anthropic_api_key")}
         try:
             cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
         except:
             cfg = {}
-        cfg.update(updates)
+        cfg.update(safe_updates)
         CONFIG_FILE.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # ── 密钥管理（优先系统密钥环，fallback 加密文件）──
+
+    def _load_credentials(self, config):
+        """从密钥环或凭证文件加载 API 密钥。"""
+        if _has_keyring:
+            try:
+                self.openai_api_key = keyring.get_password("hermit-crab", "openai_api_key") or config.get("openai_api_key", "")
+                self.openai_base_url = config.get("openai_base_url", "")
+                self.anthropic_api_key = keyring.get_password("hermit-crab", "anthropic_api_key") or config.get("anthropic_api_key", "")
+                return
+            except Exception:
+                pass
+        # Fallback: 从专门的凭证文件读取（权限受限）
+        self.openai_api_key = config.get("openai_api_key", "")
+        self.openai_base_url = config.get("openai_base_url", "")
+        self.anthropic_api_key = config.get("anthropic_api_key", "")
+
+    def _save_credentials(self, updates):
+        """保存密钥到系统密钥环（优先）或凭证文件。"""
+        key_updates = {}
+        for k in ("openai_api_key", "openai_base_url", "anthropic_api_key"):
+            if k in updates:
+                key_updates[k] = updates[k]
+        if not key_updates:
+            return
+        if _has_keyring:
+            try:
+                for k, v in key_updates.items():
+                    keyring.set_password("hermit-crab", k, v)
+                return
+            except Exception:
+                pass
+        # Fallback: 保存到 config.json（加密层）
+        self._save_config(key_updates)
 
     # ======== Window Geometry ========
 
@@ -848,6 +894,7 @@ class App(tk.Tk):
             self._setup_pending = None
         if result is not None:
             self._save_config(result)
+            self._save_credentials(result)
             self.provider = result.get("provider", self.provider)
             self.openai_api_key = result.get("openai_api_key", self.openai_api_key)
             self.openai_base_url = result.get("openai_base_url", self.openai_base_url)
@@ -870,8 +917,31 @@ class App(tk.Tk):
             if self.status_dot.itemcget(self.dot, "fill") != COLOR_STATUS_OK:
                 self._show_lines(["  [!] 后端离线，正在自动启动..."], "dim")
                 self._start_backend()
+                # 启动等待动画
+                self._show_loading_animation()
         else:
             self.after(100, self._check_status)
+
+    def _show_loading_animation(self):
+        """显示后端启动的等待动画。"""
+        dots = [".  ", ".. ", "...", " ..", "  .", "   "]
+        self._loading_idx = 0
+        self._loading_timer_id = None
+        self.status_text.configure(text="● 启动中", fg=COLOR_YELLOW)
+
+        def _animate():
+            if self._loading_idx >= len(dots):
+                self._loading_idx = 0
+            dot = dots[self._loading_idx]
+            self.status_text.configure(text=f"● 启动中{dot}")
+            self._loading_idx += 1
+            # 检查是否已在运行或超过15秒
+            if self.status_dot.itemcget(self.dot, "fill") == COLOR_STATUS_OK:
+                self.status_text.configure(text="● 在线", fg=COLOR_STATUS_OK)
+                return
+            self._loading_timer_id = self.after(500, _animate)
+
+        self.after(500, _animate)
 
     def _list_models(self):
         if self.provider == "local":
@@ -1129,10 +1199,10 @@ class App(tk.Tk):
         prov, key = parts[0].lower(), parts[1].strip()
         if prov == "openai":
             self.openai_api_key = key
-            self._save_config({"openai_api_key": key})
+            self._save_credentials({"openai_api_key": key})
         elif prov == "anthropic":
             self.anthropic_api_key = key
-            self._save_config({"anthropic_api_key": key})
+            self._save_credentials({"anthropic_api_key": key})
         else:
             self._show_lines([f"  无效 provider: {prov}，可选: openai, anthropic"], "dim")
             return
@@ -1145,6 +1215,9 @@ class App(tk.Tk):
         self.after(500, lambda: self._show_lines(["  状态已刷新"], "dim"))
 
     def _cmd_clear(self):
+        self.messages = []
+        self.context_summary = ""
+        self.started = False
         self._show_welcome()
 
     # ======== Theme System ========
@@ -1444,19 +1517,34 @@ class App(tk.Tk):
         openai_model_listbox.pack(fill="both", expand=True, pady=4)
 
         def fetch_openai_models():
-            cfg = {
-                "openai_api_key": openai_key_entry.get(),
-                "openai_base_url": openai_url_entry.get(),
-                "api_base": "",
-            }
-            ids = providers.list_openai_models(cfg)
+            fetch_btn_openai.configure(state="disabled", text="获取中...")
             openai_model_listbox.delete(0, "end")
-            for m_id in ids:
-                openai_model_listbox.insert("end", m_id)
+            openai_model_listbox.insert("end", " 正在加载...")
 
-        tk.Button(openai_frame, text="获取模型列表", bg="#222", fg=COLOR_LABEL,
+            def _fetch():
+                cfg = {
+                    "openai_api_key": openai_key_entry.get(),
+                    "openai_base_url": openai_url_entry.get(),
+                    "api_base": "",
+                }
+                ids = providers.list_openai_models(cfg)
+                dlg.after(0, lambda: _populate_openai(ids))
+
+            def _populate_openai(ids):
+                openai_model_listbox.delete(0, "end")
+                if not ids:
+                    openai_model_listbox.insert("end", " 无法获取模型列表，请检查密钥")
+                else:
+                    for m_id in ids:
+                        openai_model_listbox.insert("end", m_id)
+                fetch_btn_openai.configure(state="normal", text="获取模型列表")
+
+            threading.Thread(target=_fetch, daemon=True).start()
+
+        fetch_btn_openai = tk.Button(openai_frame, text="获取模型列表", bg="#222", fg=COLOR_LABEL,
                   font=FONT_SMALL, relief="flat",
-                  command=fetch_openai_models).pack(anchor="e", pady=(2, 0))
+                  command=fetch_openai_models)
+        fetch_btn_openai.pack(anchor="e", pady=(2, 0))
 
         anthropic_frame = tk.Frame(content_frame, bg=COLOR_BG)
         tk.Label(anthropic_frame, text="API Key:", bg=COLOR_BG, fg=COLOR_LABEL,
@@ -1485,15 +1573,30 @@ class App(tk.Tk):
         anthropic_model_listbox.pack(fill="both", expand=True, pady=4)
 
         def fetch_anthropic_models():
-            cfg = {"anthropic_api_key": anthropic_key_entry.get()}
-            ids = providers.list_anthropic_models(cfg)
+            fetch_btn_anthropic.configure(state="disabled", text="获取中...")
             anthropic_model_listbox.delete(0, "end")
-            for m_id in ids:
-                anthropic_model_listbox.insert("end", m_id)
+            anthropic_model_listbox.insert("end", " 正在加载...")
 
-        tk.Button(anthropic_frame, text="获取模型列表", bg="#222", fg=COLOR_LABEL,
+            def _fetch():
+                cfg = {"anthropic_api_key": anthropic_key_entry.get()}
+                ids = providers.list_anthropic_models(cfg)
+                dlg.after(0, lambda: _populate_anthropic(ids))
+
+            def _populate_anthropic(ids):
+                anthropic_model_listbox.delete(0, "end")
+                if not ids:
+                    anthropic_model_listbox.insert("end", " 无法获取模型列表，请检查密钥")
+                else:
+                    for m_id in ids:
+                        anthropic_model_listbox.insert("end", m_id)
+                fetch_btn_anthropic.configure(state="normal", text="获取模型列表")
+
+            threading.Thread(target=_fetch, daemon=True).start()
+
+        fetch_btn_anthropic = tk.Button(anthropic_frame, text="获取模型列表", bg="#222", fg=COLOR_LABEL,
                   font=FONT_SMALL, relief="flat",
-                  command=fetch_anthropic_models).pack(anchor="e", pady=(2, 0))
+                  command=fetch_anthropic_models)
+        fetch_btn_anthropic.pack(anchor="e", pady=(2, 0))
 
         def _show_provider_content(prov):
             for f in (local_frame, openai_frame, anthropic_frame):
@@ -1553,6 +1656,8 @@ class App(tk.Tk):
                 self._save_config({
                     "provider": self.provider,
                     "model": self.current_model,
+                })
+                self._save_credentials({
                     "openai_api_key": self.openai_api_key,
                     "openai_base_url": self.openai_base_url,
                     "anthropic_api_key": self.anthropic_api_key,
@@ -2067,38 +2172,84 @@ class App(tk.Tk):
             self.after(0, self._agent_start)
 
             config = self._provider_config()
-            if self.provider in ("local", "openai"):
-                stream_gen = providers.stream_openai(full, config)
-            elif self.provider == "anthropic":
-                stream_gen = providers.stream_anthropic(full, config)
-            else:
-                raise ValueError(f"未知 provider: {self.provider}")
+            tools_list = get_openai_tools() if self.provider in ("local", "openai") else None
 
-            for content, reasoning, usage in stream_gen:
-                if reasoning:
-                    if not in_thinking:
-                        in_thinking = True
-                        self.after(0, self._thinking_start)
-                    self.after(0, self._thinking_append, reasoning)
-                    continue
-                if content:
-                    if in_thinking:
-                        in_thinking = False
-                        self.after(0, self._thinking_end)
-                    if self.stream_start_time == 0:
-                        self.stream_start_time = time.time()
-                    self.stream_text += content
-                    self.completion_tokens += 1
-                    self.after(0, self._agent_append, content)
-                    self.after(0, self._update_stats)
-                if usage:
-                    self.completion_tokens = usage.get("completion_tokens", self.completion_tokens)
-                    self.prompt_tokens = usage.get("prompt_tokens", self.prompt_tokens)
-                    self.total_tokens = usage.get("total_tokens", self.prompt_tokens + self.completion_tokens)
-                    self.after(0, self._update_stats)
+            # 工具调用循环：最多 5 轮深度
+            max_rounds = 5
+            for _round in range(max_rounds):
+                if _round > 0:
+                    # 从第二轮开始，带上上一轮的工具结果重新请求
+                    full.append({"role": "user", "content": "请基于工具返回的结果继续。"})
 
-            if in_thinking:
-                self.after(0, self._thinking_end)
+                if self.provider in ("local", "openai"):
+                    stream_gen = providers.stream_openai(full, config, tools=tools_list)
+                elif self.provider == "anthropic":
+                    stream_gen = providers.stream_anthropic(full, config)
+                else:
+                    raise ValueError(f"未知 provider: {self.provider}")
+
+                tool_calls = None
+                collected_content = ""
+
+                for content, reasoning, usage, tc in stream_gen:
+                    if tc:
+                        tool_calls = tc
+                        break
+                    if reasoning:
+                        if not in_thinking:
+                            in_thinking = True
+                            self.after(0, self._thinking_start)
+                        self.after(0, self._thinking_append, reasoning)
+                        continue
+                    if content:
+                        if in_thinking:
+                            in_thinking = False
+                            self.after(0, self._thinking_end)
+                        if self.stream_start_time == 0:
+                            self.stream_start_time = time.time()
+                        collected_content += content
+                        self.stream_text += content
+                        self.completion_tokens += 1
+                        self.after(0, self._agent_append, content)
+                        self.after(0, self._update_stats)
+                    if usage:
+                        self.completion_tokens = usage.get("completion_tokens", self.completion_tokens)
+                        self.prompt_tokens = usage.get("prompt_tokens", self.prompt_tokens)
+                        self.total_tokens = usage.get("total_tokens", self.prompt_tokens + self.completion_tokens)
+                        self.after(0, self._update_stats)
+
+                if in_thinking:
+                    self.after(0, self._thinking_end)
+                    in_thinking = False
+
+                if tool_calls:
+                    # 执行工具调用
+                    self.after(0, self._show_lines,
+                               [f"  [工具调用] 模型请求 {len(tool_calls)} 个工具"], "dim")
+                    tool_results = []
+                    full.append({"role": "assistant", "content": collected_content,
+                                 "tool_calls": [{
+                                     "id": tc["id"],
+                                     "type": "function",
+                                     "function": {"name": tc["name"], "arguments": json.dumps(tc["arguments"])}
+                                 } for tc in tool_calls]})
+                    for tc in tool_calls:
+                        self.after(0, self._show_lines,
+                                   [f"  → 执行: {tc['name']}({json.dumps(tc['arguments'], ensure_ascii=False)[:100]})"], "dim")
+                        result = execute_tool(tc["name"], tc["arguments"], app=self)
+                        tool_results.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": result,
+                        })
+                        self.after(0, self._show_lines,
+                                   [f"  ← 结果: {result[:100]}"], "dim")
+                    full.extend(tool_results)
+                    collected_content = ""
+                    continue  # 下一轮，让模型基于工具结果继续回复
+
+                # 没有工具调用，流式输出结束
+                break
 
             if self.completion_tokens == 0 and self.stream_text:
                 self.completion_tokens = max(1, len(self.stream_text) // 3)

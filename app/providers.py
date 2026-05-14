@@ -43,11 +43,12 @@ def _headers(config):
 
 # ── OpenAI 兼容（local 也用此格式）──
 
-def stream_openai(messages, config):
+def stream_openai(messages, config, tools=None):
     """
     OpenAI 兼容格式的流式调用。
     也用于 local llama-server（同一 wire format）。
-    Yields: (content, reasoning, usage)
+    Yields: (content, reasoning, usage, tool_calls)
+    tool_calls is None normally, or a list of tool_call dicts on function call.
     """
     provider = config.get("provider", "")
     if provider != "local":
@@ -60,6 +61,8 @@ def stream_openai(messages, config):
         "max_tokens": config.get("max_tokens", 4096),
         "model": config.get("model", ""),
     }
+    if tools:
+        payload["tools"] = tools
 
     resp = requests.post(
         f"{_base_url(config)}/chat/completions",
@@ -67,6 +70,9 @@ def stream_openai(messages, config):
         headers=_headers(config),
     )
     resp.raise_for_status()
+
+    # Tool call accumulation
+    active_tool_calls = {}  # index -> {"id": str, "name": str, "arguments": str}
 
     for line in resp.iter_lines():
         if not line:
@@ -83,12 +89,45 @@ def stream_openai(messages, config):
             continue
         choices = chunk.get("choices", [{}])[0]
         delta = choices.get("delta", {})
+        finish_reason = choices.get("finish_reason")
+
+        # Handle tool_calls in delta
+        if delta.get("tool_calls"):
+            for tc in delta["tool_calls"]:
+                idx = tc.get("index", 0)
+                if idx not in active_tool_calls:
+                    active_tool_calls[idx] = {"id": "", "name": "", "arguments": ""}
+                if tc.get("id"):
+                    active_tool_calls[idx]["id"] = tc["id"]
+                if tc.get("function", {}).get("name"):
+                    active_tool_calls[idx]["name"] = tc["function"]["name"]
+                if tc.get("function", {}).get("arguments"):
+                    active_tool_calls[idx]["arguments"] += tc["function"]["arguments"]
+
+        # If finish_reason is tool_calls, yield the collected tool calls
+        if finish_reason == "tool_calls" and active_tool_calls:
+            tool_calls = []
+            for idx in sorted(active_tool_calls.keys()):
+                t = active_tool_calls[idx]
+                if t["id"] and t["name"]:
+                    try:
+                        args = json.loads(t["arguments"]) if t["arguments"] else {}
+                    except json.JSONDecodeError:
+                        args = {}
+                    tool_calls.append({
+                        "id": t["id"],
+                        "name": t["name"],
+                        "arguments": args,
+                    })
+            yield ("", "", None, tool_calls)
+            active_tool_calls.clear()
+            continue
 
         reasoning = delta.get("reasoning_content", "")
         content = delta.get("content", "")
         usage = chunk.get("usage")
 
-        yield (content, reasoning, usage)
+        yield (content, reasoning, usage, None)
 
 
 def list_openai_models(config):
@@ -238,13 +277,13 @@ def stream_anthropic(messages, config):
             if delta_type == "text_delta":
                 text = delta.get("text", "")
                 if current_block_type == "thinking":
-                    yield ("", text, None)
+                    yield ("", text, None, None)
                 else:
-                    yield (text, "", None)
+                    yield (text, "", None, None)
 
             elif delta_type == "thinking_delta":
                 thinking = delta.get("thinking", "")
-                yield ("", thinking, None)
+                yield ("", thinking, None, None)
 
             continue
 
@@ -256,7 +295,7 @@ def stream_anthropic(messages, config):
             usage = chunk.get("usage", {})
             output_tokens = usage.get("output_tokens", 0)
             yield ("", "", {"prompt_tokens": input_tokens, "completion_tokens": output_tokens,
-                            "total_tokens": input_tokens + output_tokens})
+                            "total_tokens": input_tokens + output_tokens}, None)
             continue
 
         if event == "message_stop":
