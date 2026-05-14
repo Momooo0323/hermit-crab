@@ -14,7 +14,8 @@
 - **语义知识库（RAG）** — 纯 Python TF-IDF 实现，零外部依赖，中英文分词，增量索引
 - **Web 搜索集成** — DuckDuckGo + Bing 容灾，国内网络可用
 - **多步规划执行** — 模型输出 `[计划]` 后开启逐步执行，搜索/读文件步骤自动路由
-- **持久记忆系统** — 基于文件的记忆，每次对话自动注入
+- **持久记忆系统** — 基于文件的记忆，5 种类型标签 + 重要性评级，按重要性排序注入 prompt
+- **知识库↔记忆打通** — `/mem distill` 从知识库提取内容自动保存为记忆，模型可通过 `[记忆保存]` 标记直接创建
 - **对话管理** — 历史记录、重命名、导出 Markdown、重试/编辑/新对话
 - **自动上下文压缩** — 超长上下文自动压缩早期对话为摘要
 - **流式输出** — 实时显示 token 速度、上下文占用，支持思考过程显示，⏹ 随时打断停止
@@ -43,7 +44,7 @@ hermit-crab/
 │   │   ├── knowledge_tools.py  # 知识库搜索/状态/记忆列表
 │   │   └── memory_tools.py     # 记忆添加/删除
 │   ├── __init__.py
-│   ├── memory.py               # 记忆系统
+│   ├── memory.py               # 记忆系统（类型标签 + 重要性 + KB 蒸馏）
 │   ├── themes.py               # 主题定义
 │   ├── win32_drop.py           # Windows 拖拽支持
 │   ├── providers.py            # LLM Provider 封装
@@ -52,7 +53,8 @@ hermit-crab/
 ├── permissions.py              # 权限控制模块
 ├── desktop.py                  # 桌面 GUI 版（主程序）
 ├── agent.py                    # CLI 命令行版
-├── config.json                 # 配置文件
+├── config.example.json         # 配置模板（首次运行自动复制为 config.json）
+├── config.json                 # 配置文件（已 gitignore，不会误提交）
 ├── requirements.txt            # Python 依赖
 ├── run.bat                     # 桌面版启动脚本
 ├── run-cli.bat                 # 命令行版启动脚本
@@ -84,6 +86,8 @@ python agent.py
 ```
 
 首次运行会自动弹出设置向导，引导您选择后端和配置密钥。
+
+如果 `config.json` 不存在，程序会自动从 `config.example.json` 复制一份默认配置，无需手动创建。
 
 ### 配置后端
 
@@ -119,9 +123,10 @@ python agent.py
 | `/kb index <路径>` | 索引文档到知识库 |
 | `/kb search <词>` | 搜索知识库 |
 | `/kb status` | 查看知识库统计 |
-| `/mem add <名字> <描述>` | 添加记忆 |
+| `/mem add <名字> <描述>` | 添加记忆（可选类型/重要性） |
 | `/mem del <名字>` | 删除记忆 |
-| `/mem list` | 列出所有记忆 |
+| `/mem list` | 列出所有记忆（按重要性降序） |
+| `/mem distill <查询>` | 从知识库提取相关内容保存为记忆 |
 | `/new` | 新对话 |
 | `/history` | 历史对话浏览 |
 | `/rename <标题>` | 重命名当前对话 |
