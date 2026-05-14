@@ -15,6 +15,7 @@ from app.tools import register, execute_tool, init_tools, get_openai_tools, matc
 from app.memory import (
     MEMORY_DIR, MEMORY_INDEX, ensure_dirs, load_memories,
     save_memory, delete_memory, build_memory_text,
+    TYPE_ICONS, TYPE_LABELS,
 )
 from app.themes import *
 from app.win32_drop import WM_DROPFILES, WNDPROC
@@ -1111,9 +1112,17 @@ class App(tk.Tk):
         if not self.memories:
             self._show_lines(["  还没有记忆。用 /mem add 添加一条。"], "dim")
             return
+        sorted_mems = sorted(
+            self.memories.items(),
+            key=lambda x: x[1].get("importance", 1),
+            reverse=True,
+        )
         lines = [f"  记忆 ({len(self.memories)}):"]
-        for name, mem in self.memories.items():
-            lines.append(f"    [{name}] {mem['description']}")
+        for name, mem in sorted_mems:
+            imp = mem.get("importance", 1)
+            icon = TYPE_ICONS.get(mem.get("type", ""), "📝")
+            stars = "⭐" * imp + "☆" * (5 - imp)
+            lines.append(f"    {icon}[{name}] {stars} {mem['description']}")
         self._show_lines(lines, "dim")
 
     def _cmd_mem_add(self, arg):
@@ -1128,13 +1137,39 @@ class App(tk.Tk):
         self._show_lines([f"  输入内容 (空行结束):"], "dim")
         dlg = tk.Toplevel(self)
         dlg.title("添加记忆")
-        dlg.geometry("400x250")
+        dlg.geometry("460x360")
         dlg.configure(bg=COLOR_BG)
         dlg.transient(self)
         dlg.grab_set()
 
         tk.Label(dlg, text=f"名字: {name}  描述: {desc}",
                  bg=COLOR_BG, fg=COLOR_LABEL, font=FONT_SMALL).pack(padx=16, pady=(12,4))
+
+        # 类型选择
+        type_frame = tk.Frame(dlg, bg=COLOR_BG)
+        type_frame.pack(fill="x", padx=16, pady=(4,2))
+        tk.Label(type_frame, text="类型:", bg=COLOR_BG, fg=COLOR_LABEL,
+                 font=FONT_SMALL).pack(side="left")
+        mem_type_var = tk.StringVar(value="user_info")
+        type_menu = tk.OptionMenu(type_frame, mem_type_var,
+                                  "user_info", "preference", "fact", "lesson", "task")
+        type_menu.configure(bg="#222", fg=COLOR_FG, font=FONT_SMALL,
+                            relief="flat", highlightthickness=0, bd=0)
+        type_menu["menu"].configure(bg="#222", fg=COLOR_FG)
+
+        # 重要性选择
+        imp_frame = tk.Frame(dlg, bg=COLOR_BG)
+        imp_frame.pack(fill="x", padx=16, pady=(2,4))
+        tk.Label(imp_frame, text="重要性:", bg=COLOR_BG, fg=COLOR_LABEL,
+                 font=FONT_SMALL).pack(side="left")
+        imp_var = tk.IntVar(value=3)
+        for i in range(1, 6):
+            rb = tk.Radiobutton(imp_frame, text=str(i), variable=imp_var,
+                                value=i, bg=COLOR_BG, fg=COLOR_LABEL,
+                                selectcolor="#333", font=FONT_SMALL,
+                                activebackground=COLOR_BG)
+            rb.pack(side="left", padx=2)
+
         tk.Label(dlg, text="详细内容:", bg=COLOR_BG, fg=COLOR_LABEL,
                  font=FONT_SMALL).pack(padx=16, pady=(4,2))
 
@@ -1145,9 +1180,14 @@ class App(tk.Tk):
 
         def do_save():
             content = txt.get("1.0", "end-1c").strip()
-            save_memory(name, desc, content)
+            save_memory(name, desc, content,
+                        mem_type=mem_type_var.get(),
+                        importance=imp_var.get())
             self._load_memories()
-            self._show_lines([f"  已保存记忆: {name}"], "dim")
+            icon = TYPE_ICONS.get(mem_type_var.get(), "📝")
+            lab = TYPE_LABELS.get(mem_type_var.get(), mem_type_var.get())
+            stars = "⭐" * imp_var.get() + "☆" * (5 - imp_var.get())
+            self._show_lines([f"  已保存记忆: {name} ({icon}{lab} {stars})"], "dim")
             dlg.destroy()
 
         btn_frame = tk.Frame(dlg, bg=COLOR_BG)
