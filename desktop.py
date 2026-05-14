@@ -18,6 +18,7 @@ from app.memory import (
 )
 from app.themes import *
 from app.win32_drop import WM_DROPFILES, WNDPROC
+import permissions as _perm
 
 # ============================================================
 #  配置
@@ -148,12 +149,16 @@ class App(tk.Tk):
             self._setup_pending = cfg
             self.after(200, self._run_setup_wizard)
 
+        # 权限系统
+        self.permissions = _perm.merge_permissions(cfg.get("permissions"))
+
         self._restore_geometry()
 
         self._build_ui()
         init_tools(self)
         self._load_memories()
         self._check_status()
+        self._update_perm_indicator()
         # 自动启动后端
         self.after(500, self._auto_start)
 
@@ -171,6 +176,31 @@ class App(tk.Tk):
             cfg = {}
         cfg.update(safe_updates)
         CONFIG_FILE.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # ======== 权限系统 ========
+
+    def _perm_check(self, key, label="该项操作"):
+        """检查权限，被拒时显示提示并返回 False。"""
+        if not _perm.check(self.permissions, key):
+            self._show_lines([f"  [!] 权限被拒: {label} 未开启。请在权限设置中启用。"], "error")
+            return False
+        return True
+
+    def _show_permissions_dialog(self):
+        """弹出权限设置对话框。"""
+        def on_save(new_perms):
+            self.permissions = new_perms
+            self._save_config({"permissions": new_perms})
+            self._update_perm_indicator()
+            self._show_lines(["  ✓ 权限设置已保存"], "dim")
+        _perm.show_permission_dialog(self, self.permissions, on_save)
+
+    def _update_perm_indicator(self):
+        """更新权限按钮颜色：全开灰色，有关闭项亮色。"""
+        if not hasattr(self, "perm_btn"):
+            return
+        all_open = all(_perm.check(self.permissions, key) for key, _, _, _ in _perm.PERMISSION_DEFS)
+        self.perm_btn.configure(fg="#4a4a4a" if all_open else "#ff8844")
 
     # ── 密钥管理（优先系统密钥环，fallback 加密文件）──
 
@@ -549,6 +579,12 @@ class App(tk.Tk):
             font=("Consolas", 9), cursor="hand2")
         self.config_btn.pack(side="right")
         self.config_btn.bind("<Button-1>", lambda e: self._switch_provider_dialog())
+
+        self.perm_btn = tk.Label(inner_bar,
+            text="🔐", bg="#0a0a0a", fg="#4a4a4a",
+            font=("Consolas", 9), cursor="hand2")
+        self.perm_btn.pack(side="right", padx=(0, 2))
+        self.perm_btn.bind("<Button-1>", lambda e: self._show_permissions_dialog())
 
         self.thinking_btn = tk.Label(inner_bar,
             text="思考 ▼", bg="#0a0a0a", fg="#666688",
@@ -1040,6 +1076,8 @@ class App(tk.Tk):
             "  /provider <类型>    切换 provider (local/openai/anthropic)",
             "  /key <类型> <密钥>  设置 API 密钥 (/key openai sk-...)",
             "  /read <文件路径>    读取文件内容",
+            "  /write <文件路径>   创建或写入文件",
+            "  /delete <文件路径>  删除文件",
             "  /search <关键词>    搜索网络",
             "  /plan <任务>        多步规划执行",
             "  /kb index <路径>    索引文档到知识库",
@@ -1071,6 +1109,8 @@ class App(tk.Tk):
         self._show_lines(lines, "dim")
 
     def _cmd_mem_add(self, arg):
+        if not self._perm_check("memory_add", "记忆添加"):
+            return
         parts = arg.split(None, 1)
         if not parts:
             self._show_lines(["  用法: /mem add <名字> <描述>"], "dim")
@@ -1113,6 +1153,8 @@ class App(tk.Tk):
         txt.bind("<Control-Return>", lambda e: do_save())
 
     def _cmd_mem_del(self, arg):
+        if not self._perm_check("memory_delete", "记忆删除"):
+            return
         if not arg:
             self._show_lines(["  用法: /mem del <名字>"], "dim")
             return
@@ -1816,12 +1858,102 @@ class App(tk.Tk):
             return f"[读取失败] {e}"
 
     def _cmd_read(self, filepath):
+        if not self._perm_check("file_read", "文件读取"):
+            return
         if not filepath:
             self._show_lines(["  用法: /read <文件路径>  — 读取文件内容"], "dim")
             return
         content = self._read_file(filepath)
         self._show_lines([content], "dim")
         self._send_raw(f"用户提供了以下文件内容，请根据内容回答用户可能想问的问题。\n\n{content}")
+
+    # ======== File Write / Delete ========
+
+    def _cmd_write(self, arg):
+        """/write <文件路径> — 写入/创建文件（弹出内容编辑框）。"""
+        if not self._perm_check("file_create", "文件创建"):
+            return
+        if not arg:
+            self._show_lines(["  用法: /write <文件路径>  — 创建或覆盖文件"], "dim")
+            return
+        fp = Path(arg)
+        dlg = tk.Toplevel(self)
+        dlg.title(f"写入文件: {fp.name}")
+        dlg.geometry("550x350")
+        dlg.configure(bg="#1a1a2e")
+        dlg.transient(self)
+        dlg.grab_set()
+
+        tk.Label(dlg, text=f"路径: {fp}", bg="#1a1a2e", fg="#8888cc",
+                 font=("Consolas", 9)).pack(padx=16, pady=(12, 4), anchor="w")
+
+        txt = tk.Text(dlg, bg="#1a1a1a", fg="#c0c0d0", font=("Consolas", 10),
+                      relief="flat", borderwidth=0, height=10, wrap="word",
+                      insertbackground="#88ff88")
+        txt.pack(fill="both", expand=True, padx=16, pady=4)
+        txt.focus()
+
+        def do_save():
+            content = txt.get("1.0", "end-1c")
+            try:
+                fp.parent.mkdir(parents=True, exist_ok=True)
+                fp.write_text(content, encoding="utf-8")
+                self._show_lines([f"  ✓ 已写入: {fp}  ({len(content)} 字符)"], "dim")
+            except Exception as e:
+                self._show_lines([f"  [!] 写入失败: {e}"], "error")
+            dlg.destroy()
+
+        btn_frame = tk.Frame(dlg, bg="#1a1a2e")
+        btn_frame.pack(fill="x", padx=16, pady=(4, 12))
+        tk.Button(btn_frame, text="取消", bg="#222244", fg="#888888",
+                  font=("Consolas", 9), relief="flat", padx=16, pady=4,
+                  command=dlg.destroy).pack(side="right", padx=(4, 0))
+        tk.Button(btn_frame, text="保存", bg="#1a4a1a", fg="#88ff88",
+                  font=("Consolas", 9, "bold"), relief="raised", bd=2,
+                  padx=24, pady=4, cursor="hand2",
+                  command=do_save).pack(side="right")
+        txt.bind("<Control-Return>", lambda e: do_save())
+
+    def _cmd_delete(self, arg):
+        """/delete <文件路径> — 删除文件（需确认）。"""
+        if not self._perm_check("file_delete", "文件删除"):
+            return
+        if not arg:
+            self._show_lines(["  用法: /delete <文件路径>  — 删除文件"], "dim")
+            return
+        fp = Path(arg)
+        if not fp.exists():
+            self._show_lines([f"  [!] 文件不存在: {fp}"], "error")
+            return
+        dlg = tk.Toplevel(self)
+        dlg.title("确认删除")
+        dlg.geometry("400x150")
+        dlg.configure(bg="#1a1a2e")
+        dlg.transient(self)
+        dlg.grab_set()
+
+        tk.Label(dlg, text=f"确定要删除以下文件？", bg="#1a1a2e", fg="#ff8888",
+                 font=("Consolas", 10, "bold")).pack(pady=(16, 4))
+        tk.Label(dlg, text=str(fp), bg="#1a1a2e", fg="#c0c0d0",
+                 font=("Consolas", 9), wraplength=350).pack(pady=(0, 12))
+
+        def do_delete():
+            try:
+                fp.unlink()
+                self._show_lines([f"  ✓ 已删除: {fp}"], "dim")
+            except Exception as e:
+                self._show_lines([f"  [!] 删除失败: {e}"], "error")
+            dlg.destroy()
+
+        btn_frame = tk.Frame(dlg, bg="#1a1a2e")
+        btn_frame.pack(fill="x", padx=16, pady=(4, 12))
+        tk.Button(btn_frame, text="取消", bg="#222244", fg="#888888",
+                  font=("Consolas", 9), relief="flat", padx=16,
+                  command=dlg.destroy).pack(side="right", padx=(4, 0))
+        tk.Button(btn_frame, text="确认删除", bg="#4a1a1a", fg="#ff8888",
+                  font=("Consolas", 9, "bold"), relief="raised", bd=2,
+                  padx=24, cursor="hand2",
+                  command=do_delete).pack(side="right")
 
     # ======== Intent Detection ========
 
@@ -1876,6 +2008,8 @@ class App(tk.Tk):
         if sub == "status":
             self._show_lines([f"  {self.kb.status()}"], "dim")
         elif sub == "index":
+            if not self._perm_check("kb_index", "知识库索引"):
+                return
             if not param:
                 self._show_lines(["  用法: /kb index <文件或目录路径>"], "dim")
                 return
@@ -1883,6 +2017,8 @@ class App(tk.Tk):
             result = self.kb.index_directory(param) if p.is_dir() else self.kb.index_file(param)
             self._show_lines([f"  {result}"], "dim")
         elif sub == "search":
+            if not self._perm_check("kb_search", "知识库搜索"):
+                return
             if not param:
                 self._show_lines(["  用法: /kb search <关键词>"], "dim")
                 return
@@ -2078,6 +2214,8 @@ class App(tk.Tk):
             elif cmd_line == "models":
                 self._cmd_models()
             elif cmd_line.startswith("search "):
+                if not self._perm_check("web_search", "网络搜索"):
+                    return
                 query = cmd_line[7:]
                 self._show_lines([f"  搜索: {query}"], "dim")
                 result = self._search_web(query)
@@ -2086,6 +2224,10 @@ class App(tk.Tk):
                     self._send_raw(f"用户想了解: {query}\n\n搜索到以下信息:\n{result}\n\n请基于这些信息回答。")
             elif cmd_line.startswith("read "):
                 self._cmd_read(cmd_line[5:])
+            elif cmd_line.startswith("write "):
+                self._cmd_write(cmd_line[6:])
+            elif cmd_line.startswith("delete "):
+                self._cmd_delete(cmd_line[7:])
             elif cmd_line.startswith("plan "):
                 self._cmd_plan(cmd_line[5:])
             elif cmd_line.startswith("kb "):
@@ -2394,6 +2536,7 @@ if __name__ == "__main__":
     menu.add_command(label="OpenAI API", command=lambda: app._cmd_provider("openai"))
     menu.add_command(label="Anthropic API", command=lambda: app._cmd_provider("anthropic"))
     menu.add_separator()
+    menu.add_command(label="权限设置", command=app._show_permissions_dialog)
     menu.add_command(label="重启后端", command=lambda: app._start_backend())
     menu.add_command(label="检查状态", command=app._check_status)
     menu.add_separator()

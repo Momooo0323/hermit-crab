@@ -107,11 +107,38 @@ def get_openai_tools() -> list[dict]:
     ]
 
 
+# 工具 → 权限映射（没有映射的工具默认放行）
+_TOOL_PERMISSIONS = {
+    "read_file":    "file_read",
+    "file_write":   "file_create",
+    "file_delete":  "file_delete",
+    "memory_add":   "memory_add",
+    "memory_delete": "memory_delete",
+    "web_search":   "web_search",
+    "kb_search":    "kb_search",
+    "kb_index":     "kb_index",
+}
+
+
 def execute_tool(name: str, args: dict, app=None) -> str:
-    """执行工具，返回结果文本。"""
+    """执行工具，返回结果文本（含权限检查）。"""
     tool = _registry.get(name)
     if not tool:
         return f"[工具错误] 未知工具: {name}"
+
+    # 权限检查
+    perm_key = _TOOL_PERMISSIONS.get(name)
+    if perm_key and app and hasattr(app, "permissions"):
+        import permissions as _perm
+        if not _perm.check(app.permissions, perm_key):
+            label = dict(_perm.PERMISSION_DEFS).get(perm_key, [perm_key])[0] if isinstance(perm_key, str) else perm_key
+            # 找对应的显示名称
+            for k, lbl, _, _ in _perm.PERMISSION_DEFS:
+                if k == perm_key:
+                    label = lbl
+                    break
+            return f"[权限被拒] {label} 未开启，请在权限设置中启用。"
+
     try:
         result = tool.handler(**args, app=app)
         return str(result)
@@ -138,5 +165,7 @@ def init_tools(app):
     """初始化工具系统：导入所有工具模块。"""
     import app.tools.web_search
     import app.tools.read_file
+    import app.tools.file_write
+    import app.tools.file_delete
     import app.tools.knowledge_tools
     import app.tools.memory_tools
