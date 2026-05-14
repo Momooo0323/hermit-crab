@@ -151,6 +151,7 @@ class App(tk.Tk):
 
         # 权限系统
         self.permissions = _perm.merge_permissions(cfg.get("permissions"))
+        self.system_prompt = cfg.get("system_prompt") or self.system_prompt
 
         self._restore_geometry()
 
