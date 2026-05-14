@@ -1,0 +1,4 @@
+requests>=2.28
+duckduckgo_search>=6.2
+beautifulsoup4>=4.12
+lxml>=4.9
