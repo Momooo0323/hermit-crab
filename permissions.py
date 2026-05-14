@@ -13,6 +13,7 @@ PERMISSION_DEFS = [
     ("file_read",     "文件读取",     "允许读取本地文件",        True),
     ("file_create",   "文件创建",     "允许创建和写入文件",      True),
     ("file_delete",   "文件删除",     "允许删除文件",            True),
+    ("shell_exec",    "命令执行",     "允许执行 shell 命令",    False),
     ("memory_add",    "记忆添加",     "允许保存新记忆",          True),
     ("memory_delete", "记忆删除",     "允许删除已有记忆",        True),
     ("web_search",    "网络搜索",     "允许搜索网络信息",        True),

@@ -1977,6 +1977,58 @@ class App(tk.Tk):
         except Exception as e:
             self._show_lines([f"  [!] 创建失败: {e}"], "error")
 
+    def _cmd_exec(self, arg):
+        """/exec <命令> — 执行 shell 命令。"""
+        if not self._perm_check("shell_exec", "命令执行"):
+            return
+        if not arg:
+            self._show_lines(["  用法: /exec <命令>  — 执行 shell 命令"], "dim")
+            return
+        # 确认对话框
+        dlg = tk.Toplevel(self)
+        dlg.title("确认执行命令")
+        dlg.geometry("520x200")
+        dlg.configure(bg="#1a1a2e")
+        dlg.transient(self)
+        dlg.grab_set()
+
+        tk.Label(dlg, text="将要执行以下命令：", bg="#1a1a2e", fg="#ffcc44",
+                 font=("Consolas", 10, "bold")).pack(pady=(14, 4))
+        tk.Label(dlg, text=arg, bg="#1a1a2e", fg="#c0c0d0",
+                 font=("Consolas", 9), wraplength=480).pack(pady=(0, 12))
+        tk.Label(dlg, text="确认后命令将立即执行", bg="#1a1a2e", fg="#666688",
+                 font=("Consolas", 8)).pack(pady=(0, 4))
+
+        def do_exec():
+            dlg.destroy()
+            self._show_lines([f"  $ {arg}\n"], "dim")
+            try:
+                import subprocess
+                result = subprocess.run(arg, shell=True, capture_output=True, text=True, timeout=30)
+                out = result.stdout.strip()
+                err = result.stderr.strip()
+                output = ""
+                if out:
+                    output += out + "\n"
+                if err:
+                    output += f"[stderr]\n{err}\n"
+                output += f"➜ 退出码: {result.returncode}"
+                self._show_lines([output], "dim")
+            except subprocess.TimeoutExpired:
+                self._show_lines(["  [!] 命令执行超时 (30s)"], "error")
+            except Exception as e:
+                self._show_lines([f"  [!] 执行失败: {e}"], "error")
+
+        btn_frame = tk.Frame(dlg, bg="#1a1a2e")
+        btn_frame.pack(fill="x", padx=16, pady=(4, 14))
+        tk.Button(btn_frame, text="取消", bg="#222244", fg="#888888",
+                  font=("Consolas", 9), relief="flat", padx=16,
+                  command=dlg.destroy).pack(side="right", padx=(4, 0))
+        tk.Button(btn_frame, text="确认执行", bg="#4a1a1a", fg="#ff8888",
+                  font=("Consolas", 9, "bold"), relief="raised", bd=2,
+                  padx=24, cursor="hand2",
+                  command=do_exec).pack(side="right")
+
     # ======== Intent Detection ========
 
     def _detect_intent(self, text):
@@ -2253,6 +2305,8 @@ class App(tk.Tk):
                 self._cmd_delete(cmd_line[7:])
             elif cmd_line.startswith("mkdir "):
                 self._cmd_mkdir(cmd_line[6:])
+            elif cmd_line.startswith("exec "):
+                self._cmd_exec(cmd_line[5:])
             elif cmd_line.startswith("plan "):
                 self._cmd_plan(cmd_line[5:])
             elif cmd_line.startswith("kb "):

@@ -113,6 +113,7 @@ _TOOL_PERMISSIONS = {
     "file_write":    "file_create",
     "file_delete":   "file_delete",
     "create_folder": "file_create",
+    "shell_exec":    "shell_exec",
     "memory_add":    "memory_add",
     "memory_delete": "memory_delete",
     "web_search":    "web_search",
@@ -169,5 +170,6 @@ def init_tools(app):
     import app.tools.file_write
     import app.tools.file_delete
     import app.tools.create_folder
+    import app.tools.shell_exec
     import app.tools.knowledge_tools
     import app.tools.memory_tools
